@@ -76,6 +76,8 @@ float correction        = 0;     // right +, left - (degrees)
 float turnStartTime     = 0;     // seconds
 int   turnDirection     = 0;     // right = 1, left = -1, straight = 0
 int   previousDirection = 0;
+float lastUpdateTime    = 0;     // seconds, last time LineTrackerUpdate() ran
+const float RESUME_GAP  = 0.2;   // if paused longer than this (e.g. obstacle stop), restart the ramp
 
 void LineTrackerSetup();          // pinMode LEFT_PIN / RIGHT_PIN as INPUT
 int  Read_IR(int sensorPin);      // return digitalRead(sensorPin)
@@ -121,8 +123,62 @@ void SetSteering(float correction) { /* TODO Nicholas / Mauricio */ }
 void DistanceSetup()               { /* TODO Tony / Daniel */ }
 bool ObstacleAhead()               { /* TODO Tony / Daniel */ return obstacleDetected; }
 
-void LineTrackerSetup()            { /* TODO Jacob */ }
-int  Read_IR(int sensorPin)        { return digitalRead(sensorPin); }
-void LineTrackerUpdate()           { /* TODO Jacob */ }
+// ---------------- LINE TRACKER — Jacob ----------------
+void LineTrackerSetup() {
+  pinMode(LEFT_PIN, INPUT);
+  pinMode(RIGHT_PIN, INPUT);
+}
+
+int Read_IR(int sensorPin) {
+  return digitalRead(sensorPin);           // 1 = black, 0 = white
+}
+
+void LineTrackerUpdate() {
+  leftIR  = Read_IR(LEFT_PIN);
+  rightIR = Read_IR(RIGHT_PIN);
+  float now = millis() / 1000.0;
+
+  // If loop() skipped us for a while (obstacle stop), restart the steering ramp
+  // instead of jumping straight to full correction on the first pass back.
+  if (now - lastUpdateTime > RESUME_GAP) {
+    previousDirection = 0;
+  }
+  lastUpdateTime = now;
+
+  // Decide direction from the two sensors.
+  // If the car steers AWAY from the line on the bench, swap the 1 and -1 below.
+  if (leftIR == 0 && rightIR == 0) {
+    turnDirection = 0;                     // both white: go straight
+  }
+  else if (leftIR == 1 && rightIR == 0) {
+    turnDirection = 1;                     // left sees black: steer right
+  }
+  else if (leftIR == 0 && rightIR == 1) {
+    turnDirection = -1;                    // right sees black: steer left
+  }
+  else {                                   // both black: stop
+    StopMotors();
+    SetSteering(0);
+    correction = 0;
+    turnDirection = 0;
+    previousDirection = 0;
+    return;                                // "continue to next loop"
+  }
+
+  // Steering correction: ramps up the longer we hold a turn, capped at TURN_SPEED.
+  if (turnDirection == 0) {
+    correction = 0;
+  }
+  else {
+    if (turnDirection != previousDirection) {
+      turnStartTime = now;                 // new turn (or flipped side): restart ramp
+    }
+    correction = turnDirection * min(RAMP_RATE * (now - turnStartTime), TURN_SPEED);
+  }
+
+  SetSteering(correction);
+  DriveMotors(DRIVE_SPEED);
+  previousDirection = turnDirection;
+}
 
 void PrintTelemetry()              { /* optional */ }
