@@ -55,9 +55,14 @@ void SetSteering(float correction);   // + = right, - = left (flip sign if car t
 const uint16_t STOP_DISTANCE_MM  = 200;   // stop when closer than this
 const uint16_t CLEAR_DISTANCE_MM = 250;   // resume only once farther than this (prevents stop/go chatter)
 
+const unsigned long SENSOR_TIMEOUT_MS = 500;   // no new reading this long -> treat sensor as failed
+const uint16_t OUT_OF_RANGE_MM = 8000;        // continuous mode reports ~8190 when nothing is in range
+
 Adafruit_VL53L0X lox;
 uint16_t distanceMM       = 0;      // latest reading
 bool     obstacleDetected = false;  // current decision, held between readings
+bool     distanceSensorOK = false;  // false if lox.begin() failed
+unsigned long lastReadingMs = 0;    // millis() of the last completed reading
 
 void DistanceSetup();      // Wire.begin(), lox.begin(), lox.startRangeContinuous()
 bool ObstacleAhead();      // if lox.isRangeComplete(): read + update obstacleDetected;
@@ -120,8 +125,47 @@ void StopMotors()                  { /* TODO Nicholas / Mauricio */ }
 void SteeringSetup()               { /* TODO Nicholas / Mauricio */ }
 void SetSteering(float correction) { /* TODO Nicholas / Mauricio */ }
 
-void DistanceSetup()               { /* TODO Tony / Daniel */ }
-bool ObstacleAhead()               { /* TODO Tony / Daniel */ return obstacleDetected; }
+// ---------------- DISTANCE SENSOR — Tony / Daniel ----------------
+void DistanceSetup() {
+  Wire.begin();
+  distanceSensorOK = lox.begin();
+  if (!distanceSensorOK) {
+    if (DEBUG) Serial.println(F("VL53L0X not found - check wiring (SDA=A4, SCL=A5, 5V, GND)"));
+    return;
+  }
+  lox.startRangeContinuous();          // sensor measures on its own; we just collect results
+  lastReadingMs = millis();
+}
+
+bool ObstacleAhead() {
+  // Fail safe: no sensor means no driving.
+  if (!distanceSensorOK) {
+    obstacleDetected = true;
+    return obstacleDetected;
+  }
+
+  // Non-blocking: only read when a new measurement is ready.
+  if (lox.isRangeComplete()) {
+    distanceMM = lox.readRange();
+    lastReadingMs = millis();
+
+    bool inRange = (distanceMM > 0 && distanceMM < OUT_OF_RANGE_MM);
+
+    if (!obstacleDetected && inRange && distanceMM < STOP_DISTANCE_MM) {
+      obstacleDetected = true;         // something got too close: stop
+    }
+    else if (obstacleDetected && (!inRange || distanceMM > CLEAR_DISTANCE_MM)) {
+      obstacleDetected = false;        // clearly gone: resume
+    }
+  }
+
+  // Fail safe: sensor stopped reporting.
+  if (millis() - lastReadingMs > SENSOR_TIMEOUT_MS) {
+    obstacleDetected = true;
+  }
+
+  return obstacleDetected;
+}
 
 // ---------------- LINE TRACKER — Jacob ----------------
 void LineTrackerSetup() {
